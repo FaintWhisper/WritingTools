@@ -499,10 +499,8 @@ class CustomPopupWindow(QtWidgets.QWidget):
         
         # Input area (hidden in edit mode)
         self.input_area = QWidget()
-        input_layout = QVBoxLayout(self.input_area)
+        input_layout = QHBoxLayout(self.input_area)
         input_layout.setContentsMargins(0,0,0,0)
-        input_row = QHBoxLayout()
-        input_layout.addLayout(input_row)
         
         self.custom_input = QLineEdit()
         self.custom_input.setPlaceholderText(_("Describe your change..."))
@@ -517,7 +515,7 @@ class CustomPopupWindow(QtWidgets.QWidget):
             }}
         """)
         self.custom_input.returnPressed.connect(self.on_custom_change)
-        input_row.addWidget(self.custom_input)
+        input_layout.addWidget(self.custom_input)
         
         send_btn = QPushButton()
         send_icon = os.path.join(os.path.dirname(sys.argv[0]),
@@ -540,17 +538,7 @@ class CustomPopupWindow(QtWidgets.QWidget):
                             self.custom_input.sizeHint().height())
         send_btn.clicked.connect(self.on_custom_change)
         send_btn.setToolTip(_("Apply instructions and insert the result"))
-        input_row.addWidget(send_btn)
-
-        self.write_new_text = QtWidgets.QCheckBox(_("Write new text"))
-        self.write_new_text.setToolTip(_("Use only your instructions, even if text is selected."))
-        self.write_new_text.setStyleSheet(f"color: {'#fff' if colorMode=='dark' else '#333'};")
-        self.write_new_text.toggled.connect(
-            lambda checked: self.custom_input.setPlaceholderText(
-                _("Describe what to write...") if checked else _("Describe your change...")
-            )
-        )
-        input_layout.addWidget(self.write_new_text)
+        input_layout.addWidget(send_btn)
         
         content_layout.addWidget(self.input_area)
 
@@ -956,7 +944,7 @@ class CustomPopupWindow(QtWidgets.QWidget):
         txt = self.custom_input.text().strip()
         if txt:
             self.close()
-            self.app.process_option('Custom', txt, write_new_text=self.write_new_text.isChecked())
+            self.app.process_option('Custom', txt)
 
     def on_generic_instruction(self, instruction):
         if not self.edit_mode:

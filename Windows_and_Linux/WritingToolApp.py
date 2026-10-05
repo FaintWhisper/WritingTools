@@ -695,7 +695,7 @@ class WritingToolApp(QtWidgets.QApplication):
         except Exception as e:
             logging.error(f'Error clearing clipboard: {e}')
 
-    def process_option(self, option, custom_change=None, write_new_text=False):
+    def process_option(self, option, custom_change=None):
         """
         Spawn a worker thread that waits for the asynchronous clipboard
         capture and then runs the chosen option. Kept as a thin wrapper so
@@ -721,7 +721,7 @@ class WritingToolApp(QtWidgets.QApplication):
         threading.Thread(
             target=self.process_option_thread,
             args=(option, dict(selected_prompt), custom_change,
-                  self.current_text_holder, write_new_text),
+                  self.current_text_holder),
             daemon=True
         ).start()
 
@@ -741,8 +741,7 @@ class WritingToolApp(QtWidgets.QApplication):
             }
         ]
 
-    def process_option_thread(self, option, selected_prompt, custom_change, holder,
-                              write_new_text=False):
+    def process_option_thread(self, option, selected_prompt, custom_change, holder):
         """
         Worker: wait for the background clipboard capture to land, then
         either open a response window (for window-mode options) or set up
@@ -759,7 +758,7 @@ class WritingToolApp(QtWidgets.QApplication):
             self.show_message_signal.emit('Error', 'Could not finish reading the selection. Please try again.')
             return
         selected_text = (holder.text if holder else '') or ''
-        generate_text = option == 'Custom' and (write_new_text or not selected_text.strip())
+        generate_text = option == 'Custom' and not selected_text.strip()
 
         if not selected_text.strip() and not generate_text:
             self.show_message_signal.emit('Error', 'Please select text to use this option.')
