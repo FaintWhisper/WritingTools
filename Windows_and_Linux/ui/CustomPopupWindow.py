@@ -4,7 +4,6 @@ import os
 import sys
 from functools import partial
 
-from pynput import keyboard as pykeyboard
 from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -236,11 +235,11 @@ class ButtonEditDialog(QDialog):
 
     def get_button_data(self):
         data = {
-            "name": self.name_input.text(),
-            "prefix": "Make this change to the following text:\n\n",
+            "name": self.name_input.text().strip(),
+            "prefix": self.button_data.get("prefix", "Make this change to the following text:\n\n"),
             # Retrieve multiline text
             "instruction": self.instruction_input.toPlainText(),
-            "icon": "icons/custom",
+            "icon": self.button_data.get("icon", "icons/custom"),
             "open_in_window": self.window_radio.isChecked()
         }
         # Only include `hotkey` if the user actually typed one. Old
@@ -568,17 +567,35 @@ class CustomPopupWindow(QtWidgets.QWidget):
 
         return data
 
-    @staticmethod
-    def save_options(options):
+    def save_options(self, options):
         options_path = os.path.join(os.path.dirname(sys.argv[0]), 'options.json')
         with open(options_path, 'w') as f:
             json.dump(options, f, indent=2)
+        self.app.load_options()
+        self.app.register_hotkey()
+
+    def refresh_buttons(self):
+        """Refresh the open editor after saving a button change."""
+        self.build_buttons_list()
+        self.rebuild_grid_layout()
+        self.adjustSize()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        area = self.screen().availableGeometry()
+        self.move(
+            max(area.x(), min(self.x(), area.x() + area.width() - self.width())),
+            max(area.y(), min(self.y(), area.y() + area.height() - self.height())),
+        )
 
     def build_buttons_list(self):
         """
         Reads options.json, creates DraggableButton for each (except "Custom"),
         storing them in self.button_widgets in the same order as the JSON file.
         """
+        for button in self.button_widgets:
+            button.hide()
+            button.deleteLater()
         self.button_widgets.clear()
         data = self.load_options()
 
@@ -597,8 +614,9 @@ class CustomPopupWindow(QtWidgets.QWidget):
             if hotkey:
                 b.setToolTip(f"Direct hotkey: {hotkey}")
 
-            if not self.edit_mode:
-                b.clicked.connect(partial(self.on_generic_instruction, k))
+            b.clicked.connect(partial(self.on_generic_instruction, k))
+            if self.edit_mode:
+                self.add_edit_delete_icons(b)
             self.button_widgets.append(b)
 
     def rebuild_grid_layout(self, parent_layout=None):
@@ -611,13 +629,14 @@ class CustomPopupWindow(QtWidgets.QWidget):
             item = parent_layout.itemAt(i)
             if isinstance(item, QtWidgets.QGridLayout):
                 grid = item
-                for j in reversed(range(grid.count())):
-                    w = grid.itemAt(j).widget()
-                    if w:
-                        grid.removeWidget(w)
-                parent_layout.removeItem(grid)
+                while grid.count():
+                    grid.takeAt(0)
+                parent_layout.takeAt(i)
+                grid.deleteLater()
             elif (item.widget() and isinstance(item.widget(), QPushButton) 
                 and item.widget().text() == "+ Add New"):
+                parent_layout.takeAt(i)
+                item.widget().hide()
                 item.widget().deleteLater()
 
         # Create new grid with fixed column width
@@ -747,20 +766,6 @@ class CustomPopupWindow(QtWidgets.QWidget):
             self.reset_button.hide()
             self.drag_label.hide()
 
-            # Inform the user that the app will close to apply changes
-            msg = QtWidgets.QMessageBox()
-            msg.setWindowTitle("Quitting to apply changes...")
-            msg.setText("Writing Tools needs to relaunch to apply your changes & will now quit.\nPlease relaunch Writing Tools.exe to see your changes.")
-            msg.setStandardButtons(QtWidgets.QMessageBox.Ok)
-            msg.exec_()
-
-            self.app.load_options()
-            self.close()
-            # Instead of restarting, simply exit the app:
-            QtCore.QTimer.singleShot(100, self.app.exit_app)
-            return
-
-
         # Update the edit button icon now that icon_name is defined
         icon_path = os.path.join(
             os.path.dirname(sys.argv[0]),
@@ -775,13 +780,7 @@ class CustomPopupWindow(QtWidgets.QWidget):
 
         # Update button overlays
         for btn in self.button_widgets:
-            try:
-                btn.clicked.disconnect()
-            except:
-                pass
-
             if not self.edit_mode:
-                btn.clicked.connect(partial(self.on_generic_instruction, btn.key))
                 if hasattr(btn, 'icon_container') and btn.icon_container:
                     btn.icon_container.deleteLater()
                     btn.icon_container = None
@@ -792,15 +791,16 @@ class CustomPopupWindow(QtWidgets.QWidget):
 
         # Rebuild grid layout
         self.rebuild_grid_layout()
+        self.adjustSize()
 
 
     def on_reset_clicked(self):
         """
-        Reset `options.json` to the DEFAULT_OPTIONS_JSON, then show message & restart.
+        Restore the default buttons and apply them immediately.
         """
         confirm_box = QtWidgets.QMessageBox()
-        confirm_box.setWindowTitle("Confirm Reset to Defaults & Quit?")
-        confirm_box.setText("To reset the buttons to their original configuration, Writing Tools would need to quit, so you'd need to relaunch Writing Tools.exe.\nAre you sure you want to continue?")
+        confirm_box.setWindowTitle("Reset to Defaults?")
+        confirm_box.setText("Reset all buttons, prompts, and direct shortcuts to their defaults?")
         confirm_box.setStandardButtons(QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
         confirm_box.setDefaultButton(QtWidgets.QMessageBox.No)
         
@@ -810,10 +810,7 @@ class CustomPopupWindow(QtWidgets.QWidget):
                 default_data = json.loads(DEFAULT_OPTIONS_JSON)
                 self.save_options(default_data)
 
-                # Save and quit
-                self.app.load_options()
-                self.close()
-                QtCore.QTimer.singleShot(100, self.app.exit_app)
+                self.refresh_buttons()
             
             except Exception as e:
                 logging.error(f"Error resetting options.json: {e}")
@@ -823,55 +820,20 @@ class CustomPopupWindow(QtWidgets.QWidget):
                 error_msg.exec_()
 
     def _validate_hotkey(self, hotkey, exclude_button=None):
-        """
-        Check a button hotkey string for validity and conflicts.
-
-        Returns (ok, error_message). Empty hotkey is always ok — the dialog
-        omits the field on save, which means "no direct hotkey for this
-        button". This is also how every legacy/old options.json entry
-        looks, so absence is always safe.
-
-        `exclude_button` skips the named button when checking conflicts —
-        used during edit so a button doesn't conflict with its own
-        previously-saved hotkey.
-        """
-        if not hotkey:
-            return True, None
-
-        # Authoritative format check: try parsing it the same way the
-        # listener will. Catches typos, unknown key names, missing
-        # modifiers, etc. without us having to maintain a regex.
+        """Validate with the same rules as the main shortcut in Settings."""
         try:
-            pykeyboard.HotKey.parse(self.app._to_pynput_hotkey(hotkey))
-        except Exception as e:
-            return False, (
-                f"'{hotkey}' isn't a valid hotkey.\n\n"
-                f"Use '+' between keys, e.g. ctrl+j or ctrl+shift+p.\n"
-                f"({e})"
-            )
-
-        # Conflict with the global Writing Tools shortcut. Same combination
-        # can't dispatch to both the popup and a direct fire.
-        global_shortcut = (self.app.config.get('shortcut') or 'ctrl+space').strip().lower()
-        if hotkey == global_shortcut:
-            return False, (
-                f"'{hotkey}' is already used as the main Writing Tools "
-                f"hotkey (set in Settings). Pick a different combination."
-            )
-
-        # Conflict with another button's hotkey.
-        data = self.load_options()
-        for k, v in data.items():
-            if k == exclude_button:
-                continue
-            other = (v.get('hotkey') or '').strip().lower()
-            if other and other == hotkey:
-                return False, (
-                    f"'{hotkey}' is already used by the '{k}' button. "
-                    f"Pick a different combination."
-                )
-
+            self.app.validate_hotkey(hotkey, exclude_button=exclude_button)
+        except ValueError as error:
+            return False, str(error)
         return True, None
+
+    def _validate_button(self, data, exclude_button=None):
+        name = data['name']
+        if not name or name == 'Custom':
+            return False, "Enter a button name other than the reserved name 'Custom'."
+        if name != exclude_button and name in (self.app.options or {}):
+            return False, f"A button named '{name}' already exists. Choose a different name."
+        return self._validate_hotkey(data.get('hotkey', ''), exclude_button)
 
     @staticmethod
     def _build_button_entry(bd, existing=None):
@@ -897,9 +859,9 @@ class CustomPopupWindow(QtWidgets.QWidget):
         dialog = ButtonEditDialog(self, title="Add New Button")
         while dialog.exec_():
             bd = dialog.get_button_data()
-            ok, err = self._validate_hotkey(bd.get("hotkey", ""))
+            ok, err = self._validate_button(bd)
             if not ok:
-                QtWidgets.QMessageBox.warning(self, "Invalid hotkey", err)
+                QtWidgets.QMessageBox.warning(self, "Invalid button", err)
                 # Re-open the dialog with the user's entries preserved so
                 # they can fix the hotkey instead of starting over.
                 continue
@@ -907,21 +869,10 @@ class CustomPopupWindow(QtWidgets.QWidget):
             data[bd["name"]] = self._build_button_entry(bd)
             self.save_options(data)
 
-            self.build_buttons_list()
-            self.rebuild_grid_layout()
-
-            self.hide()
-
-            QtWidgets.QMessageBox.information(
-                self,
-                "Quitting to apply button...",
-                "Writing Tools needs to relaunch to apply your fancy button & will now quit.\nPlease relaunch Writing Tools.exe to see your new button."
-            )
-
-            self.app.load_options()
-            self.close()
-            QtCore.QTimer.singleShot(100, self.app.exit_app)
+            self.refresh_buttons()
+            dialog.deleteLater()
             return
+        dialog.deleteLater()
 
 
     def edit_button_clicked(self, btn):
@@ -936,9 +887,9 @@ class CustomPopupWindow(QtWidgets.QWidget):
             new_data = dialog.get_button_data()
             # Pass `exclude_button=key` so we don't flag the button's own
             # current hotkey as a conflict with itself.
-            ok, err = self._validate_hotkey(new_data.get("hotkey", ""), exclude_button=key)
+            ok, err = self._validate_button(new_data, exclude_button=key)
             if not ok:
-                QtWidgets.QMessageBox.warning(self, "Invalid hotkey", err)
+                QtWidgets.QMessageBox.warning(self, "Invalid button", err)
                 continue
             data = self.load_options()
             existing = data.get(key)
@@ -947,30 +898,17 @@ class CustomPopupWindow(QtWidgets.QWidget):
             data[new_data["name"]] = self._build_button_entry(new_data, existing=existing)
             self.save_options(data)
 
-            self.build_buttons_list()
-            self.rebuild_grid_layout()
-
-            self.hide()
-
-            # Show message about relaunch requirement
-            QtWidgets.QMessageBox.information(
-                self,
-                "Quitting to apply changes to this button...",
-                "Writing Tools needs to relaunch to apply your changes & will now quit.\nPlease relaunch Writing Tools.exe to see your changes."
-            )
-
-            # Save and quit
-            self.app.load_options()
-            self.close()
-            QtCore.QTimer.singleShot(100, self.app.exit_app)
+            self.refresh_buttons()
+            dialog.deleteLater()
             return
+        dialog.deleteLater()
 
     def delete_button_clicked(self, btn):
         """Handle deletion of a button."""
         key = btn.key
         confirm = QtWidgets.QMessageBox()
-        confirm.setWindowTitle("Confirm Delete & Quit?")
-        confirm.setText(f"To delete the '{key}' button, Writing Tools would need to quit, so you'd need to relaunch Writing Tools.exe.\nAre you sure you want to continue?")
+        confirm.setWindowTitle("Delete Button?")
+        confirm.setText(f"Delete the '{key}' button and its direct shortcut?")
         confirm.setStandardButtons(QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
         confirm.setDefaultButton(QtWidgets.QMessageBox.No)
         
@@ -980,17 +918,7 @@ class CustomPopupWindow(QtWidgets.QWidget):
                 del data[key]
                 self.save_options(data)
 
-                # Clean up UI elements
-                for btn_ in self.button_widgets[:]:
-                    if btn_.key == key:
-                        if hasattr(btn_, 'icon_container') and btn_.icon_container:
-                            btn_.icon_container.deleteLater()
-                        btn_.deleteLater()
-                        self.button_widgets.remove(btn_)
-                
-                self.app.load_options()
-                self.close()
-                QtCore.QTimer.singleShot(100, self.app.exit_app)
+                self.refresh_buttons()
                 
             except Exception as e:
                 logging.error(f"Error deleting button: {e}")

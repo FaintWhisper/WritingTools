@@ -350,10 +350,42 @@ class WritingToolApp(QtWidgets.QApplication):
         pynput's `<ctrl>+j` / `<ctrl>+<alt>+<space>` format. Single-char keys
         stay as-is; multi-char keys (modifiers, named keys) get wrapped in <>.
         """
+        tokens = (token.strip().lower() for token in hotkey_str.split('+'))
         return '+'.join(
             f'{t}' if len(t) <= 1 else f'<{t}>'
-            for t in hotkey_str.split('+')
+            for t in tokens
         )
+
+    def validate_hotkey(self, hotkey, exclude_button=None, is_global=False):
+        """Reject invalid or conflicting shortcuts before changing active bindings."""
+        if not hotkey.strip():
+            if is_global:
+                raise ValueError('The main Writing Tools shortcut cannot be empty.')
+            return
+        try:
+            keys = frozenset(pykeyboard.HotKey.parse(self._to_pynput_hotkey(hotkey)))
+        except ValueError as error:
+            raise ValueError(
+                f"'{hotkey}' is not a valid shortcut. Use combinations such as ctrl+shift+j."
+            ) from error
+
+        bindings = []
+        if not is_global:
+            bindings.append((self.config.get('shortcut', 'ctrl+space'), 'the main Writing Tools shortcut'))
+        bindings.extend(
+            (entry.get('hotkey'), f"the '{name}' button")
+            for name, entry in (self.options or {}).items()
+            if name not in ('Custom', exclude_button)
+        )
+        for other, label in bindings:
+            if not other:
+                continue
+            try:
+                other_keys = frozenset(pykeyboard.HotKey.parse(self._to_pynput_hotkey(other)))
+            except ValueError:
+                continue  # Invalid saved bindings are not registered by the listener.
+            if keys == other_keys:
+                raise ValueError(f"'{hotkey}' is already used by {label}. Pick a different combination.")
 
     def start_hotkey_listener(self):
         """
@@ -370,6 +402,7 @@ class WritingToolApp(QtWidgets.QApplication):
         try:
             if self.hotkey_listener is not None:
                 self.hotkey_listener.stop()
+                self.hotkey_listener.join(timeout=1)
                 self.hotkey_listener = None
 
             hotkey_map = {}
@@ -662,6 +695,10 @@ class WritingToolApp(QtWidgets.QApplication):
         is never blocked on the clipboard read.
         """
         logging.debug(f'Processing option: {option}')
+        selected_prompt = (self.options or {}).get(option)
+        if selected_prompt is None:
+            self.show_message_signal.emit('Error', f"The '{option}' button no longer exists.")
+            return
 
         # Drop any stale ref so a previous run's late-arriving response can't
         # land in a now-irrelevant window. The new window (if any) is created
@@ -671,7 +708,7 @@ class WritingToolApp(QtWidgets.QApplication):
 
         threading.Thread(
             target=self.process_option_thread,
-            args=(option, custom_change),
+            args=(option, dict(selected_prompt), custom_change),
             daemon=True
         ).start()
 
@@ -691,7 +728,7 @@ class WritingToolApp(QtWidgets.QApplication):
             }
         ]
 
-    def process_option_thread(self, option, custom_change=None):
+    def process_option_thread(self, option, selected_prompt, custom_change=None):
         """
         Worker: wait for the background clipboard capture to land, then
         either open a response window (for window-mode options) or set up
@@ -716,7 +753,9 @@ class WritingToolApp(QtWidgets.QApplication):
             self.show_message_signal.emit('Error', 'Please select text to use this option.')
             return
 
-        if self.options[option]['open_in_window']:
+        # Use the prompt captured when the action started, even if it is edited
+        # or deleted while clipboard capture or a request is in progress.
+        if selected_prompt['open_in_window']:
             QtCore.QMetaObject.invokeMethod(
                 self,
                 '_setup_response_window',
@@ -726,7 +765,6 @@ class WritingToolApp(QtWidgets.QApplication):
             )
 
         try:
-            selected_prompt = self.options.get(option, ('', ''))
             prompt_prefix = selected_prompt['prefix']
             system_instruction = selected_prompt['instruction']
             if option == 'Custom':
@@ -738,7 +776,7 @@ class WritingToolApp(QtWidgets.QApplication):
 
             logging.debug(f'Getting response from provider for option: {option}')
 
-            if self.options[option]['open_in_window']:
+            if selected_prompt['open_in_window']:
                 logging.debug('Getting response for window display')
                 response = self.current_provider.get_response(system_instruction, prompt, return_response=True)
                 logging.debug(f'Got response of length: {len(response) if response else 0}')

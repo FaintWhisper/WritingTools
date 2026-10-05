@@ -301,7 +301,7 @@ class SettingsWindow(QtWidgets.QWidget):
         scroll_area.setWidget(scroll_content)
         main_layout.addWidget(scroll_area)
 
-        # Create bottom container for save button and restart notice
+        # Create bottom container for the save button.
         bottom_container = QtWidgets.QWidget()
         bottom_container.setStyleSheet("background: transparent;")  # Ensure transparency
         bottom_layout = QtWidgets.QVBoxLayout(bottom_container)
@@ -327,14 +327,14 @@ class SettingsWindow(QtWidgets.QWidget):
         bottom_layout.addWidget(save_button)
 
         if not self.providers_only:
-            restart_text = "<p style='text-align: center;'>" + \
-            _("Please restart Writing Tools for changes to take effect.") + \
+            save_text = "<p style='text-align: center;'>" + \
+            _("Changes take effect when you save.") + \
             "</p>"
 
-            restart_notice = QtWidgets.QLabel(restart_text)
-            restart_notice.setStyleSheet(f"font-size: 15px; color: {'#cccccc' if colorMode == 'dark' else '#555555'}; font-style: italic;")
-            restart_notice.setWordWrap(True)
-            bottom_layout.addWidget(restart_notice)
+            save_notice = QtWidgets.QLabel(save_text)
+            save_notice.setStyleSheet(f"font-size: 15px; color: {'#cccccc' if colorMode == 'dark' else '#555555'}; font-style: italic;")
+            save_notice.setWordWrap(True)
+            bottom_layout.addWidget(save_notice)
 
         main_layout.addWidget(bottom_container)
 
@@ -351,10 +351,18 @@ class SettingsWindow(QtWidgets.QWidget):
 
     def save_settings(self):
         """Save the current settings."""
+        shortcut = (self.app.config.get('shortcut', 'ctrl+space') if self.providers_only
+                    else self.shortcut_input.text()).strip().lower()
+        try:
+            self.app.validate_hotkey(shortcut, is_global=True)
+        except ValueError as error:
+            QtWidgets.QMessageBox.warning(self, _("Invalid shortcut"), str(error))
+            return
+
         self.app.config['locale'] = 'en'
 
         if not self.providers_only:
-            self.app.config['shortcut'] = self.shortcut_input.text()
+            self.app.config['shortcut'] = shortcut
             self.app.config['theme'] = 'gradient' if self.gradient_radio.isChecked() else 'plain'
         else:
             self.app.create_tray_icon()
