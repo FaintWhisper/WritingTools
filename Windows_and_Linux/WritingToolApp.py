@@ -24,6 +24,15 @@ from update_checker import UpdateChecker
 
 _ = gettext.gettext
 
+WRITE_TEXT_INSTRUCTION = (
+    "Write the text or code requested by the user, ready to insert at their cursor. "
+    "Follow their requested language, tone, length, and format. Otherwise, use the language "
+    "of their instructions and write clearly and naturally. Output only the requested content: "
+    "no preamble, explanation, surrounding quotation marks, or code fences unless requested. "
+    "Do not invent personal details, sources, or facts. Use clearly marked placeholders for "
+    "required details the user has not supplied."
+)
+
 
 class _SelectedTextHolder:
     """
@@ -559,9 +568,8 @@ class WritingToolApp(QtWidgets.QApplication):
         the clipboard. The old behaviour gated popup show on a 0.2-0.5s
         clipboard read, which on slower systems would time out and
         incorrectly fall back to the chat-only "Ask your AI" UI even when
-        text *was* selected. We now assume text is always selected;
-        `process_option_thread` waits on the holder before kicking off the
-        AI request.
+        text *was* selected. The worker waits for capture to finish before
+        deciding whether custom instructions edit a selection or create text.
         """
         logging.debug('Showing popup window')
 
@@ -631,8 +639,8 @@ class WritingToolApp(QtWidgets.QApplication):
         Slow systems' clipboard subsystems can take a while to populate
         after Ctrl+C — that's the whole reason this is async. The polling
         timeout is generous; an empty result after timeout means the user
-        pressed the hotkey without actually selecting anything, which
-        `process_option_thread` reports as a normal error.
+        pressed the hotkey without actually selecting anything. Custom
+        instructions can then generate new text instead of editing a selection.
         """
         try:
             clipboard_backup = pyperclip.paste()
@@ -687,7 +695,7 @@ class WritingToolApp(QtWidgets.QApplication):
         except Exception as e:
             logging.error(f'Error clearing clipboard: {e}')
 
-    def process_option(self, option, custom_change=None):
+    def process_option(self, option, custom_change=None, write_new_text=False):
         """
         Spawn a worker thread that waits for the asynchronous clipboard
         capture and then runs the chosen option. Kept as a thin wrapper so
@@ -695,6 +703,10 @@ class WritingToolApp(QtWidgets.QApplication):
         is never blocked on the clipboard read.
         """
         logging.debug(f'Processing option: {option}')
+        if option == 'Custom':
+            custom_change = (custom_change or '').strip()
+            if not custom_change:
+                return
         selected_prompt = (self.options or {}).get(option)
         if selected_prompt is None:
             self.show_message_signal.emit('Error', f"The '{option}' button no longer exists.")
@@ -708,7 +720,8 @@ class WritingToolApp(QtWidgets.QApplication):
 
         threading.Thread(
             target=self.process_option_thread,
-            args=(option, dict(selected_prompt), custom_change),
+            args=(option, dict(selected_prompt), custom_change,
+                  self.current_text_holder, write_new_text),
             daemon=True
         ).start()
 
@@ -728,7 +741,8 @@ class WritingToolApp(QtWidgets.QApplication):
             }
         ]
 
-    def process_option_thread(self, option, selected_prompt, custom_change=None):
+    def process_option_thread(self, option, selected_prompt, custom_change, holder,
+                              write_new_text=False):
         """
         Worker: wait for the background clipboard capture to land, then
         either open a response window (for window-mode options) or set up
@@ -740,22 +754,21 @@ class WritingToolApp(QtWidgets.QApplication):
         # and click. The 3s ceiling is a safety net for genuinely sluggish
         # systems; if the 2s polling deadline in the capture thread tripped
         # first, the event is already set and this returns immediately.
-        holder = self.current_text_holder
-        if holder is None or not holder.ready.wait(timeout=3.0):
+        if holder is not None and not holder.ready.wait(timeout=3.0):
             logging.warning('Timed out waiting for selected text capture')
+            self.show_message_signal.emit('Error', 'Could not finish reading the selection. Please try again.')
+            return
         selected_text = (holder.text if holder else '') or ''
+        generate_text = option == 'Custom' and (write_new_text or not selected_text.strip())
 
-        if not selected_text.strip():
-            # The chat-mode fallback that used to fire here was removed when
-            # popup show became instant — we no longer have a way to detect
-            # "user wants to chat" vs "capture failed", so we pick the safer
-            # interpretation and surface the error.
+        if not selected_text.strip() and not generate_text:
             self.show_message_signal.emit('Error', 'Please select text to use this option.')
             return
 
         # Use the prompt captured when the action started, even if it is edited
         # or deleted while clipboard capture or a request is in progress.
-        if selected_prompt['open_in_window']:
+        open_in_window = selected_prompt['open_in_window'] and not generate_text
+        if open_in_window:
             QtCore.QMetaObject.invokeMethod(
                 self,
                 '_setup_response_window',
@@ -765,18 +778,19 @@ class WritingToolApp(QtWidgets.QApplication):
             )
 
         try:
-            prompt_prefix = selected_prompt['prefix']
-            system_instruction = selected_prompt['instruction']
-            if option == 'Custom':
-                prompt = f"{prompt_prefix}Described change: {custom_change}\n\nText: {selected_text}"
+            system_instruction = WRITE_TEXT_INSTRUCTION if generate_text else selected_prompt['instruction']
+            if generate_text:
+                prompt = custom_change
+            elif option == 'Custom':
+                prompt = f"{selected_prompt['prefix']}Change instructions: {custom_change}\n\nSource text:\n{selected_text}"
             else:
-                prompt = f"{prompt_prefix}{selected_text}"
+                prompt = f"{selected_prompt['prefix']}{selected_text}"
 
             self.output_queue = ""
 
             logging.debug(f'Getting response from provider for option: {option}')
 
-            if selected_prompt['open_in_window']:
+            if open_in_window:
                 logging.debug('Getting response for window display')
                 response = self.current_provider.get_response(system_instruction, prompt, return_response=True)
                 logging.debug(f'Got response of length: {len(response) if response else 0}')

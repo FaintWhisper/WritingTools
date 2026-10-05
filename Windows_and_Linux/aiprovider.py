@@ -458,7 +458,7 @@ class GeminiProvider(AIProvider):
             return response_text
         except Exception as e:
             logging.error(f"Error processing Gemini response: {e}")
-            self.app.output_ready_signal.emit("An error occurred while processing the response.")
+            self.app.show_message_signal.emit("Error", f"Could not generate text: {e}")
             return ""
         finally:
             self.close_requested = False
@@ -631,7 +631,7 @@ class OllamaProvider(AIProvider):
             return response_text
         except Exception as e:
             logging.error(f"Error during Ollama chat: {e}")
-            self.app.output_ready_signal.emit("An error occurred during Ollama chat.")
+            self.app.show_message_signal.emit("Error", f"Could not generate text: {e}")
             return ""
 
     def after_load(self):
