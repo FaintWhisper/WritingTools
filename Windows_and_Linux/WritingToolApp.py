@@ -556,28 +556,34 @@ class WritingToolApp(QtWidgets.QApplication):
             screen = QGuiApplication.screenAt(cursor_pos)
             if screen is None:
                 screen = QGuiApplication.primaryScreen()
-            screen_geometry = screen.geometry()
+            screen_geometry = screen.availableGeometry()
             logging.debug(f'Cursor is on screen: {screen.name()}')
             logging.debug(f'Screen geometry: {screen_geometry}')
-            # Show the popup to get its size
-            self.popup_window.show()
+            # Size the popup on the cursor's screen before showing it.
+            self.popup_window.setScreen(screen)
             self.popup_window.adjustSize()
-            # Ensure the popup it's focused, even on lower-end machines
-            self.popup_window.activateWindow()
-            QtCore.QTimer.singleShot(100, self.popup_window.custom_input.setFocus)
 
             popup_width = self.popup_window.width()
             popup_height = self.popup_window.height()
             # Calculate position
             x = cursor_pos.x()
             y = cursor_pos.y() + 20  # 20 pixels below cursor
-            # Adjust if the popup would go off the right edge of the screen
-            if x + popup_width > screen_geometry.right():
-                x = screen_geometry.right() - popup_width
             # Adjust if the popup would go off the bottom edge of the screen
-            if y + popup_height > screen_geometry.bottom():
+            if y + popup_height > screen_geometry.y() + screen_geometry.height():
                 y = cursor_pos.y() - popup_height - 10  # 10 pixels above cursor
+            # Clamp both axes, including screens with negative coordinates and
+            # taskbars on any edge. QRect.right()/bottom() are inclusive.
+            x = max(screen_geometry.x(), min(
+                x, screen_geometry.x() + screen_geometry.width() - popup_width
+            ))
+            y = max(screen_geometry.y(), min(
+                y, screen_geometry.y() + screen_geometry.height() - popup_height
+            ))
             self.popup_window.move(x, y)
+            self.popup_window.show()
+            # Ensure the popup is focused, even on lower-end machines.
+            self.popup_window.activateWindow()
+            QtCore.QTimer.singleShot(100, self.popup_window.custom_input.setFocus)
             logging.debug(f'Popup window moved to position: ({x}, {y})')
         except Exception as e:
             logging.error(f'Error showing popup window: {e}', exc_info=True)

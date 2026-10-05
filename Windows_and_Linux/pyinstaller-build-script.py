@@ -5,13 +5,15 @@ import sys
 
 def run_pyinstaller_build():
     pyinstaller_command = [
-        "pyinstaller",
+        sys.executable, "-m", "PyInstaller",
         "--onefile",
         "--windowed",
         "--icon=icons/app_icon.ico",
         "--name=Writing Tools",
         "--clean",
         "--noconfirm",
+        # OpenAI requires jiter's native extension in the frozen application.
+        "--collect-all", "jiter",
         # Exclude unnecessary modules
         "--exclude-module", "tkinter",
         "--exclude-module", "unittest",
